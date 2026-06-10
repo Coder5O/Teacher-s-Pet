@@ -1,9 +1,3 @@
-/**
- * useAuth hook — manages Firebase authentication state.
- * This hook listens to auth changes and syncs with Zustand store.
- * Import this in your root layout to initialize auth.
- */
-
 'use client';
 
 import { useEffect } from 'react';
@@ -15,25 +9,36 @@ import {
   signOut,
   sendPasswordResetEmail,
   updateProfile,
+  getIdToken,
 } from 'firebase/auth';
 import { auth, googleProvider } from '@/lib/firebase';
 import { getUserProfile, upsertUserProfile } from '@/lib/firestore';
 import { useAuthStore } from '@/store/authStore';
 import type { UserProfile } from '@/types';
 
+// Sets the auth-token cookie the middleware reads
+async function setSessionCookie(firebaseUser: { getIdToken: () => Promise<string> }) {
+  const idToken = await getIdToken(firebaseUser as Parameters<typeof getIdToken>[0]);
+  await fetch('/api/auth/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+}
+
 export function useAuth() {
   const { user, isLoading, isInitialized, setUser, setLoading, setInitialized, clearUser } =
     useAuthStore();
 
-  // Listen for Firebase auth state changes on mount
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         try {
-          // Try to fetch existing Firestore profile
+          // Set the cookie so middleware recognises this session
+          await setSessionCookie(firebaseUser);
+
           let profile = await getUserProfile(firebaseUser.uid);
           if (!profile) {
-            // First time login — create basic profile
             const newProfile: Partial<UserProfile> = {
               uid: firebaseUser.uid,
               email: firebaseUser.email ?? '',
@@ -52,6 +57,8 @@ export function useAuth() {
           console.error('Error fetching user profile:', error);
         }
       } else {
+        // Clear the cookie on sign-out
+        await fetch('/api/auth/session', { method: 'DELETE' });
         clearUser();
       }
       setLoading(false);
@@ -60,8 +67,6 @@ export function useAuth() {
 
     return () => unsubscribe();
   }, [setUser, setLoading, setInitialized, clearUser]);
-
-  // ─── Auth Methods ────────────────────────────────────────────────────────────
 
   const loginWithEmail = async (email: string, password: string) => {
     setLoading(true);
